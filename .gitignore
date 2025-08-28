@@ -1,41 +1,100 @@
-# Prerequisites
-*.d
+#OS junk files
+[Tt]humbs.db
+*.DS_Store
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
+#Visual Studio files
+*.[Oo]bj
+*.user
+*.aps
 *.pch
-
-# Linker files
+*.vspscc
+*.vssscc
+*_i.c
+*_p.c
+*.ncb
+*.suo
+*.tlb
+*.tlh
+*.bak
+*.[Cc]ache
 *.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
+*.log
 *.lib
+*.sbr
+*.sdf
+*.opensdf
+*.unsuccessfulbuild
+.vs/
+ipch/
+[Oo]bj/
+[Bb]in
+[Dd]ebug*/
+[Rr]elease*/
+Ankh.NoLoad
+*.tmp_proj
 
-# Executables
-*.exe
-*.out
-*.app
+#MonoDevelop
+*.pidb
+*.userprefs
 
-# debug information files
-*.dwo
+#JetBrains Rider files
+.idea/
+
+#Tooling
+_ReSharper*/
+*.resharper
+[Tt]est[Rr]esult*
+*.sass-cache
+
+#Project files
+[Bb]uild/
+
+#Subversion files
+.svn
+
+# Office Temp Files
+~$*
+
+# vim Temp Files
+*~
+
+#NuGet
+_NuGetPackages/
+packages/
+src/packages/
+*.nupkg
+
+#ncrunch
+*ncrunch*
+*crunch*.local.xml
+
+# visual studio database projects
+*.dbmdl
+
+#Test files
+*.testsettings
+
+#diff garbage
+*.orig
+
+#visual studio C debugger garbage
+*VC.db
+*VC.opendb
+
+# Cache folder for the tintoy.docfx-assistant vs code extensions that helps autoring documentation
+.vscode/docfx-assistant/
+
+# Build tools used for building the docs
+_doc_build_tools
+
+# Setup files
+setup/*/Setup Files/*
+setup/*/setup-cache/*
+setup/Prerequisites/
+setup/Installshield
+!setup/Installshield/*.rul
+!setup/Installshield/*.ism
+
+# Verify related
+# Snapshots for actual/received should not be committed contrary to expected/verified.
+*.received.*
