@@ -1,20 +1,26 @@
 // --------------------------------------------------------------------------
-// BarcodeReader.cpp  (DTK v5 Migration - Step 1) + License Activation (offline-only)
+// BarcodeReader.cpp  (DTK v5 Migration - Unlimited License Key + Offline Activation Call)
 // --------------------------------------------------------------------------
+// This build uses a vendor provided UNLIMITED SERVER 1D license key:
+//   PN8YV-1XUDV-LV8SY-W0U2H-NMXKL
 //
-// OFFLINE LICENSE ACTIVATION ONLY (no online activation attempted)
-//   Usage:
-//     1. First run (unactivated): logs SystemID and activation URL.
-//     2. Use that URL on a networked machine to obtain activation code.
-//     3. Set env: SPOTLIGHT_BARCODE_ACTIVATION_CODE=<activation-code>
-//     4. Restart application; log should show "Offline activation succeeded".
-//   Environment Variables:
-//     SPOTLIGHT_BARCODE_LICENSE_KEY         Optional override of compiled key
-//     SPOTLIGHT_BARCODE_ACTIVATION_CODE     Offline activation code
-//     SPOTLIGHT_BARCODE_ACTIVATION_SAVE_PATH Optional file path to save SystemID + link
+// Vendor email requirement:
+//   "Include the activation code in program code using
+//    BarcodeReader.ActivateLicenseOffline ... you don't need to activate anything."
+// Interpretation: The DLL expects a one-time call to BarcodeReader_ActivateLicenseOffline
+// with the vendor's long offline activation token BEFORE creating the internal
+// BarcodeReader instance (BarcodeReader_Create). We perform that call (if exported)
+// prior to reader creation in Initialize()/Load sequence.
 //
-// No network operations are performed here.
+// Token handling:
+//   - Provide token via compile-time constant DTK_OFFLINE_ACTIVATION_CODE (preferred empty here)
+//     OR environment variable: DTK_BARCODE_OFFLINE_CODE
+//   - We never log the full token; only masked tail.
 //
+// We still:
+//   * Probe for license key setters (global/handle) and apply if exported.
+//   * Validate license AFTER creating the internal reader handle (some builds mark valid only then).
+//   * Support 1D + optional DataMatrix (remove if strictly 1D).
 // --------------------------------------------------------------------------
 
 #include "stdafx.h"
@@ -22,6 +28,7 @@
 #include <vector>
 #include <ctime>
 #include <cstdlib>
+#include <cstring>
 #include "windows.h"
 #include "BarcodeReader.h"
 #include "ExceptionInfo.h"
@@ -30,72 +37,61 @@
 
 _CLASSNAME(_T("BarcodeReader"))
 
-// External helpers assumed present in project
+// External helpers assumed present
 extern void CopyString(LPCTSTR src, LPTSTR& dst);
 extern void ReleaseString(LPTSTR& str);
 
-// ================= v5 function pointer typedefs  =================
-typedef BARREADERRESULT (DTKBARAPI *PFN_ReadFromImageBuffer)(BARREADER, void*, int, int, int, PixelFormatEnum);
-typedef void (DTKBARAPI *PFN_set_RectX)(BARREADER, int);
-typedef void (DTKBARAPI *PFN_set_RectY)(BARREADER, int);
-typedef void (DTKBARAPI *PFN_set_RectW)(BARREADER, int);
-typedef void (DTKBARAPI *PFN_set_RectH)(BARREADER, int);
-typedef void (DTKBARAPI *PFN_set_BarcodeTypes)(BARREADER, BarcodeTypeEnum);
-typedef void (DTKBARAPI *PFN_set_Orientation)(BARREADER, BarcodeOrientationEnum);
-typedef int  (DTKBARAPI *PFN_get_Error)(BARREADERRESULT);
-typedef int  (DTKBARAPI *PFN_get_Count)(BARREADERRESULT);
-typedef BARCODE (DTKBARAPI *PFN_get_Barcode)(BARREADERRESULT, int);
-typedef int  (DTKBARAPI *PFN_get_Text)(BARCODE, char*, int);
-typedef BarcodeTypeEnum (DTKBARAPI *PFN_get_Type)(BARCODE);
-typedef void (DTKBARAPI *PFN_destroy_Barcode)(BARCODE);
-typedef void (DTKBARAPI *PFN_destroy_Result)(BARREADERRESULT);
+// ================= v5 function pointer typedefs =================
+typedef BARREADERRESULT(DTKBARAPI* PFN_ReadFromImageBuffer)(BARREADER, void*, int, int, int, PixelFormatEnum);
+typedef void (DTKBARAPI* PFN_set_RectX)(BARREADER, int);
+typedef void (DTKBARAPI* PFN_set_RectY)(BARREADER, int);
+typedef void (DTKBARAPI* PFN_set_RectW)(BARREADER, int);
+typedef void (DTKBARAPI* PFN_set_RectH)(BARREADER, int);
+typedef void (DTKBARAPI* PFN_set_BarcodeTypes)(BARREADER, BarcodeTypeEnum);
+typedef void (DTKBARAPI* PFN_set_Orientation)(BARREADER, BarcodeOrientationEnum);
+typedef int  (DTKBARAPI* PFN_get_Error)(BARREADERRESULT);
+typedef int  (DTKBARAPI* PFN_get_Count)(BARREADERRESULT);
+typedef BARCODE(DTKBARAPI* PFN_get_Barcode)(BARREADERRESULT, int);
+typedef int  (DTKBARAPI* PFN_get_Text)(BARCODE, char*, int);
+typedef BarcodeTypeEnum(DTKBARAPI* PFN_get_Type)(BARCODE);
+typedef void (DTKBARAPI* PFN_destroy_Barcode)(BARCODE);
+typedef void (DTKBARAPI* PFN_destroy_Result)(BARREADERRESULT);
+typedef void (DTKBARAPI* PFN_GetLicenseInfo)(char*, int, char*, int, int*, time_t*, char*, int, int*);
 
-// Offline license related
-typedef int  (DTKBARAPI *PFN_ActivateLicenseOffline)(const char*);
-typedef int  (DTKBARAPI *PFN_GetActivationLink)(const char*, const char*, char*, int);
-typedef int  (DTKBARAPI *PFN_GetSystemID)(char*, int);
-typedef void (DTKBARAPI *PFN_GetLicenseInfo)(
-    char*, int, char*, int, int*, time_t*, char*, int, int*);
+// License related optional APIs
+typedef int (DTKBARAPI* PFN_SetLicenseKey_Global)(const char*);
+typedef int (DTKBARAPI* PFN_SetLicenseKey_Handle)(BARREADER, const char*);
+typedef int (DTKBARAPI* PFN_ActivateLicenseOffline)(const char*);
 
 // ================= Function pointers =================
-static PFN_ReadFromImageBuffer   pReadFromImageBuffer   = nullptr;
-static PFN_set_RectX             pSetRectX              = nullptr;
-static PFN_set_RectY             pSetRectY              = nullptr;
-static PFN_set_RectW             pSetRectW              = nullptr;
-static PFN_set_RectH             pSetRectH              = nullptr;
-static PFN_set_BarcodeTypes      pSetBarcodeTypes       = nullptr;
-static PFN_set_Orientation       pSetOrientation        = nullptr;
-static PFN_get_Error             pGetResultError        = nullptr;
-static PFN_get_Count             pGetBarcodesCount      = nullptr;
-static PFN_get_Barcode           pGetBarcode            = nullptr;
-static PFN_get_Text              pGetBarcodeText        = nullptr;
-static PFN_get_Type              pGetBarcodeType        = nullptr;
-static PFN_destroy_Barcode       pDestroyBarcode        = nullptr;
-static PFN_destroy_Result        pDestroyResult         = nullptr;
+static PFN_ReadFromImageBuffer  pReadFromImageBuffer = nullptr;
+static PFN_set_RectX            pSetRectX = nullptr;
+static PFN_set_RectY            pSetRectY = nullptr;
+static PFN_set_RectW            pSetRectW = nullptr;
+static PFN_set_RectH            pSetRectH = nullptr;
+static PFN_set_BarcodeTypes     pSetBarcodeTypes = nullptr;
+static PFN_set_Orientation      pSetOrientation = nullptr;
+static PFN_get_Error            pGetResultError = nullptr;
+static PFN_get_Count            pGetBarcodesCount = nullptr;
+static PFN_get_Barcode          pGetBarcode = nullptr;
+static PFN_get_Text             pGetBarcodeText = nullptr;
+static PFN_get_Type             pGetBarcodeType = nullptr;
+static PFN_destroy_Barcode      pDestroyBarcode = nullptr;
+static PFN_destroy_Result       pDestroyResult = nullptr;
+static PFN_GetLicenseInfo       pGetLicenseInfo = nullptr;
+static PFN_SetLicenseKey_Global pSetLicenseKeyGlobal = nullptr;
+static PFN_SetLicenseKey_Handle pSetLicenseKeyHandle = nullptr;
 static PFN_ActivateLicenseOffline pActivateLicenseOffline = nullptr;
-static PFN_GetActivationLink     pGetActivationLink     = nullptr;
-static PFN_GetSystemID           pGetSystemID           = nullptr;
-static PFN_GetLicenseInfo        pGetLicenseInfo        = nullptr;
 
-// License key (default) – can be overridden by env SPOTLIGHT_BARCODE_LICENSE_KEY
-static const char* const g_DefaultLicenseKey = "5XZ1D-GEVDS-2JX17-5K2X5-8H6LV";
-static std::string g_EffectiveLicenseKey;
+// ---- Unlimited license key + offline activation token ----
+static const char* const DTK_LICENSE_KEY = "PN8YV-1XUDV-LV8SY-W0U2H-NMXKL";
+// Put the LONG vendor offline activation token here if you want to compile it in,
+// otherwise leave empty and supply via environment variable DTK_BARCODE_OFFLINE_CODE.
+static const char* const DTK_OFFLINE_ACTIVATION_CODE = "nUccO+vHoeLqk1KXWOEo0XUvCTHhY1niBXiAaeg0lww+3ipzXg6DcqzO34deJ0llJRtIqC3+nqfpH2XtR+3H/G5EiLHJyMlqasOi6HaOx9T1jIRB5ftUKAxcqC+eeyVwepjlHSfouxmQIrWVkTMQjLNkqWjN+5cJVpycy3OmtEIf7sTGAlzfl0PfMswhMfe43KjcmpNbZWW3hWMTkfSxWRZIvh/+xiGt4b3vZXpE3r9pYfoq5VPfoedkhTosUwGnEb2rfLGwWw48gJ15cTfvd3oOKSPAOBs5vwY206RIAo2JejlDW53s1nPy4Xd4PhgNea/x4Pr5ygTnbZW1YZSGq4YdNJy2RbJvMdo7oPrBLQtM"; // TODO: paste vendor offline activation token OR use env var.
+
 static bool g_LicenseChecked = false;
-
-static const char* GetLicenseKey()
-{
-    if (!g_EffectiveLicenseKey.empty())
-        return g_EffectiveLicenseKey.c_str();
-    const char* envKey = std::getenv("SPOTLIGHT_BARCODE_LICENSE_KEY");
-    g_EffectiveLicenseKey = (envKey && *envKey) ? envKey : g_DefaultLicenseKey;
-    int dashCount = 0;
-    for (char c : g_EffectiveLicenseKey) if (c == '-') dashCount++;
-    if (dashCount != 4) {
-        LOG_WARNING(_T("BarcodeReader"), _T("License"),
-            _T("License key format unexpected (dash count != 4) – verify the key"));
-    }
-    return g_EffectiveLicenseKey.c_str();
-}
+static bool g_OfflineActivationAttempted = false;
+static bool g_LoggedNoKeyApi = false;
 
 // Logger init (idempotent)
 static void InitLogger()
@@ -110,20 +106,20 @@ static void InitLogger()
 static const TCHAR* TypeToString(BarcodeTypeEnum t)
 {
     switch (t) {
-        case BT_Code39:        return _T("Code39");
-        case BT_Inter2of5:     return _T("Interleaved2of5");
-        case BT_UPCA:          return _T("UPCA");
-        case BT_UPCE:          return _T("UPCE");
-        case BT_EAN8:          return _T("EAN8");
-        case BT_EAN13:         return _T("EAN13");
-        case BT_Codabar:       return _T("Codabar");
-        case BT_Code128:       return _T("Code128");
-        case BT_Code93:        return _T("Code93");
-        case BT_Code11:        return _T("Code11");
-        case BT_DataMatrix:    return _T("DataMatrix");
-        case BT_QRCode:        return _T("QRCode");
-        case BT_PDF417:        return _T("PDF417");
-        default:               return _T("Unknown");
+    case BT_Code39: return _T("Code39");
+    case BT_Inter2of5: return _T("Interleaved2of5");
+    case BT_UPCA: return _T("UPCA");
+    case BT_UPCE: return _T("UPCE");
+    case BT_EAN8: return _T("EAN8");
+    case BT_EAN13: return _T("EAN13");
+    case BT_Codabar: return _T("Codabar");
+    case BT_Code128: return _T("Code128");
+    case BT_Code93: return _T("Code93");
+    case BT_Code11: return _T("Code11");
+    case BT_DataMatrix: return _T("DataMatrix");
+    case BT_QRCode: return _T("QRCode");
+    case BT_PDF417: return _T("PDF417");
+    default: return _T("Unknown");
     }
 }
 
@@ -131,169 +127,181 @@ static const TCHAR* TypeToString(BarcodeTypeEnum t)
 static const TCHAR* DescribeEngineError(int code)
 {
     switch (code) {
-        case 7101: return _T("Buffer is NULL");
-        case 7102: return _T("Invalid scan rectangle");
-        case 7103: return _T("Filename error");
-        case 7104: return _T("Recognition timeout");
-        case 7105: return _T("Image decode failure");
-        case 7106: return _T("Unsupported pixel format");
-        case 7107: return _T("TIFF decode error");
-        case 7201: return _T("No license (activation required)");
-        case 7202: return _T("Trial validation failed");
-        case 7301: return _T("PDF open error");
-        case 7302: return _T("PDF wrong password");
-        case 7303: return _T("PDF wrong page number");
-        default:   return _T("Unknown engine error");
+    case 7101: return _T("Buffer is NULL");
+    case 7102: return _T("Invalid scan rectangle");
+    case 7103: return _T("Filename error");
+    case 7104: return _T("Recognition timeout");
+    case 7105: return _T("Image decode failure");
+    case 7106: return _T("Unsupported pixel format");
+    case 7107: return _T("TIFF decode error");
+    case 7201: return _T("No license (unexpected for unlimited)");
+    case 7202: return _T("Trial validation failed (unexpected for unlimited)");
+    case 7301: return _T("PDF open error");
+    case 7302: return _T("PDF wrong password");
+    case 7303: return _T("PDF wrong page number");
+    default:   return _T("Unknown engine error");
     }
 }
 
-static std::string GetEnv(const char* name)
+// Mask license key for logs
+static std::wstring MaskLicenseKey()
 {
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
-}
-
-// Helper to write small UTF-8 file (used for saving activation info)
-static void SaveTextFileUTF8(const std::string& path, const std::string& content)
-{
-    if (path.empty()) return;
-    FILE* f = nullptr;
-#ifdef _WIN32
-    fopen_s(&f, path.c_str(), "wb");
+#ifdef UNICODE
+    const char* k = DTK_LICENSE_KEY;
+    if (!k) return L"(null)";
+    size_t len = std::strlen(k);
+    if (len <= 4) {
+        int wl = MultiByteToWideChar(CP_UTF8, 0, k, -1, nullptr, 0);
+        std::wstring w; w.resize(wl ? wl - 1 : 0);
+        if (wl > 1) MultiByteToWideChar(CP_UTF8, 0, k, -1, &w[0], wl - 1);
+        return w;
+    }
+    std::wstring masked = L"****-****-****-****-";
+    const char* tail = k + (len - 4);
+    int wl = MultiByteToWideChar(CP_UTF8, 0, tail, -1, nullptr, 0);
+    std::wstring wtail; wtail.resize(wl ? wl - 1 : 0);
+    if (wl > 1) MultiByteToWideChar(CP_UTF8, 0, tail, -1, &wtail[0], wl - 1);
+    masked += wtail;
+    return masked;
 #else
-    f = fopen(path.c_str(), "wb");
+    const char* k = DTK_LICENSE_KEY;
+    if (!k) return "(null)";
+    size_t len = std::strlen(k);
+    if (len <= 4) return std::string(k);
+    return std::string("****-****-****-****-") + std::string(k + len - 4);
 #endif
-    if (!f) return;
-    fwrite(content.data(), 1, content.size(), f);
-    fclose(f);
 }
 
-// Offline activation logic only
-static void TryActivateLicense()
+// Mask activation token tail only
+static std::wstring MaskActivationToken(const char* token)
 {
-    if (g_LicenseChecked)
+#ifdef UNICODE
+    if (!token || !*token) return L"(none)";
+    size_t len = std::strlen(token);
+    size_t tail = (len > 10) ? 10 : len;
+    const char* t = token + (len - tail);
+    int wl = MultiByteToWideChar(CP_UTF8, 0, t, (int)tail, nullptr, 0);
+    std::wstring w; w.resize(wl);
+    if (wl) MultiByteToWideChar(CP_UTF8, 0, t, (int)tail, &w[0], wl);
+    return std::wstring(L"...") + w;
+#else
+    if (!token || !*token) return "(none)";
+    size_t len = std::strlen(token);
+    size_t tail = (len > 10) ? 10 : len;
+    return std::string("...") + std::string(token + len - tail);
+#endif
+}
+
+// Apply license key if API present
+static void ApplyLicenseKeyIfPossible(BARREADER hReader)
+{
+#ifdef UNICODE
+    std::wstring masked = MaskLicenseKey();
+    const TCHAR* mk = masked.c_str();
+#else
+    std::string masked = MaskLicenseKey();
+    const TCHAR* mk = masked.c_str();
+#endif
+
+    if (hReader && pSetLicenseKeyHandle) {
+        int rc = pSetLicenseKeyHandle(hReader, DTK_LICENSE_KEY);
+        if (rc == 0) {
+            TCHAR buf[160]; _stprintf(buf, _T("Handle license key applied (%s)"), mk);
+            LOG_INFO(_T("BarcodeReader"), _T("License"), buf);
+        }
+        else {
+            TCHAR buf[160]; _stprintf(buf, _T("Handle license key apply failed rc=%d (%s)"), rc, mk);
+            LOG_WARNING(_T("BarcodeReader"), _T("License"), buf);
+        }
         return;
+    }
+    if (pSetLicenseKeyGlobal) {
+        int rc = pSetLicenseKeyGlobal(DTK_LICENSE_KEY);
+        if (rc == 0) {
+            TCHAR buf[160]; _stprintf(buf, _T("Global license key applied (%s)"), mk);
+            LOG_INFO(_T("BarcodeReader"), _T("License"), buf);
+        }
+        else {
+            TCHAR buf[160]; _stprintf(buf, _T("Global license key apply failed rc=%d (%s)"), rc, mk);
+            LOG_WARNING(_T("BarcodeReader"), _T("License"), buf);
+        }
+    }
+    else if (!g_LoggedNoKeyApi) {
+        LOG_INFO(_T("BarcodeReader"), _T("License"), _T("No license key API exported (assuming embedded unlimited build)"));
+        g_LoggedNoKeyApi = true;
+    }
+}
+
+// Offline activation attempt (if export available)
+static void TryOfflineActivation()
+{
+    if (g_OfflineActivationAttempted) return;
+    g_OfflineActivationAttempted = true;
+
+    if (!pActivateLicenseOffline) {
+        LOG_INFO(_T("BarcodeReader"), _T("License"), _T("Offline activation export not found (may be unnecessary)"));
+        return;
+    }
+
+    // Acquire token
+    const char* token = DTK_OFFLINE_ACTIVATION_CODE;
+    if (!token || !*token) {
+        token = std::getenv("DTK_BARCODE_OFFLINE_CODE");
+    }
+    if (!token || !*token) {
+        LOG_INFO(_T("BarcodeReader"), _T("License"), _T("Offline activation export present but no token provided"));
+        return;
+    }
+
+    int rc = pActivateLicenseOffline(token);
+    if (rc == 0) {
+        std::wstring tail = MaskActivationToken(token);
+        TCHAR buf[160];
+        _stprintf(buf, _T("Offline activation succeeded (token tail %s)"), tail.c_str());
+        LOG_INFO(_T("BarcodeReader"), _T("License"), buf);
+    }
+    else {
+        TCHAR buf[160];
+        _stprintf(buf, _T("Offline activation failed rc=%d (continuing)"), rc);
+        LOG_WARNING(_T("BarcodeReader"), _T("License"), buf);
+    }
+}
+
+// Diagnostic license info (after create)
+static void ValidateUnlimitedLicense()
+{
+    if (g_LicenseChecked) return;
     g_LicenseChecked = true;
 
     if (!pGetLicenseInfo) {
-        LOG_WARNING(_T("BarcodeReader"), _T("License"), _T("GetLicenseInfo not available; skipping license validation"));
+        LOG_INFO(_T("BarcodeReader"), _T("License"), _T("License info API not exported (assuming unlimited)"));
         return;
     }
 
-    auto Recheck = []()->bool {
-        char licKey[128] = {0};
-        char comments[128] = {0};
-        int licenseType = 0;
-        time_t exp = 0;
-        char dongle[64] = {0};
-        int valid = 0;
-        pGetLicenseInfo(licKey, (int)sizeof(licKey),
-                        comments, (int)sizeof(comments),
-                        &licenseType,
-                        &exp,
-                        dongle, (int)sizeof(dongle),
-                        &valid);
-        if (valid) {
-            LOG_INFO(_T("BarcodeReader"), _T("License"), _T("License valid"));
-            return true;
-        }
-        return false;
-    };
+    char licKey[128] = { 0 };
+    char comments[128] = { 0 };
+    int licenseType = 0;
+    time_t exp = 0;
+    char dongle[64] = { 0 };
+    int valid = 0;
 
-    if (Recheck()) return;
+    pGetLicenseInfo(licKey, (int)sizeof(licKey),
+        comments, (int)sizeof(comments),
+        &licenseType,
+        &exp,
+        dongle, (int)sizeof(dongle),
+        &valid);
 
-    // Gather system ID
-    std::string systemId;
-    if (pGetSystemID) {
-        int need = pGetSystemID(nullptr, 0);
-        if (need > 0) {
-            systemId.resize(need);
-            int got = pGetSystemID(&systemId[0], need);
-            if (got <= 0) systemId.clear();
-        }
+    if (valid) {
+        LOG_INFO(_T("BarcodeReader"), _T("License"), _T("LicenseInfo: valid=1"));
     }
-#ifdef UNICODE
-    if (!systemId.empty()) {
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, systemId.c_str(), (int)systemId.size(), nullptr, 0);
-        std::wstring ws; ws.resize(wlen);
-        MultiByteToWideChar(CP_UTF8, 0, systemId.c_str(), (int)systemId.size(), &ws[0], wlen);
-        LOG_INFO(_T("BarcodeReader"), _T("License"), ws.c_str());
-    } else {
-        LOG_WARNING(_T("BarcodeReader"), _T("License"), _T("SystemID unavailable"));
-    }
-#else
-    LOG_INFO(_T("BarcodeReader"), _T("License"), systemId.empty() ? "SystemID unavailable" : systemId.c_str());
-#endif
-
-    // Build activation link (local composition, no network)
-    const char* key = GetLicenseKey();
-    std::string activationLink;
-    if (pGetActivationLink) {
-        // Use exported helper if present (just for consistency)
-        int need = pGetActivationLink(key, "SpotLightDSClient", nullptr, 0);
-        if (need > 0) {
-            activationLink.resize(need);
-            int got = pGetActivationLink(key, "SpotLightDSClient", &activationLink[0], need);
-            if (got <= 0) activationLink.clear();
-        }
-    }
-    if (activationLink.empty()) {
-        activationLink = "http://www.dtksoft.com/license/activate/?lic_key=";
-        activationLink += key;
-        activationLink += "&prod=bar&system_id=";
-        activationLink += (systemId.empty() ? "(unknown)" : systemId);
-        activationLink += "&comments=SpotLightDSClient";
-    }
-
-#ifdef UNICODE
-    {
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, activationLink.c_str(), (int)activationLink.size(), nullptr, 0);
-        std::wstring wl; wl.resize(wlen);
-        MultiByteToWideChar(CP_UTF8, 0, activationLink.c_str(), (int)activationLink.size(), &wl[0], wlen);
-        LOG_INFO(_T("BarcodeReader"), _T("License"), wl.c_str());
-    }
-#else
-    LOG_INFO(_T("BarcodeReader"), _T("License"), activationLink.c_str());
-#endif
-
-    // Optional save file
-    std::string savePath = GetEnv("SPOTLIGHT_BARCODE_ACTIVATION_SAVE_PATH");
-    if (!savePath.empty()) {
-        std::string content;
-        content += "SystemID: ";
-        content += systemId.empty() ? "(unavailable)" : systemId;
-        content += "\nLicenseKey: ";
-        content += key;
-        content += "\nActivationLink:\n";
-        content += activationLink;
-        content += "\n(Use this on an Internet-connected machine to obtain activation code)";
-        SaveTextFileUTF8(savePath, content);
-        LOG_INFO(_T("BarcodeReader"), _T("License"), _T("Activation info saved (SPOTLIGHT_BARCODE_ACTIVATION_SAVE_PATH)"));
-    }
-
-    // Offline activation attempt if code provided
-    std::string activationCode = GetEnv("SPOTLIGHT_BARCODE_ACTIVATION_CODE");
-    if (!activationCode.empty()) {
-        if (pActivateLicenseOffline) {
-            int rc = pActivateLicenseOffline(activationCode.c_str());
-            if (rc == 0) {
-                LOG_INFO(_T("BarcodeReader"), _T("License"), _T("Offline activation succeeded"));
-                if (!Recheck())
-                    LOG_WARNING(_T("BarcodeReader"), _T("License"), _T("Activation succeeded but license still invalid on recheck"));
-            } else {
-                TCHAR msg[128];
-                _stprintf(msg, _T("Offline activation failed (code=%d)"), rc);
-                LOG_WARNING(_T("BarcodeReader"), _T("License"), msg);
-            }
-        } else {
-            LOG_WARNING(_T("BarcodeReader"), _T("License"), _T("Offline activation API not available in library"));
-        }
-    } else {
-        LOG_INFO(_T("BarcodeReader"), _T("License"),
-                 _T("Set SPOTLIGHT_BARCODE_ACTIVATION_CODE to complete offline activation"));
+    else {
+        LOG_WARNING(_T("BarcodeReader"), _T("License"),
+            _T("LicenseInfo: valid=0 (if decode succeeds and no 7201/7202 errors appear, this flag may be non-critical)"));
     }
 }
 
+// ===== BarcodeReader implementation =====
 BarcodeReader::BarcodeReader()
 {
     m_BcOrientation = 0;
@@ -306,11 +314,12 @@ BarcodeReader::BarcodeReader()
     m_dwLastReadTime = 0;
     m_usBarcodeReadingInterval1 = 0;
     m_usBarcodeReadingInterval2 = 0;
-    for (int i=0;i<3;i++) {
-        m_enableScanRect[i]=false;
-        m_scanRectLeft[i]=m_scanRectTop[i]=m_scanRectRight[i]=m_scanRectBottom[i]=0;
+    for (int i = 0; i < 3; i++) {
+        m_enableScanRect[i] = false;
+        m_scanRectLeft[i] = m_scanRectTop[i] = m_scanRectRight[i] = m_scanRectBottom[i] = 0;
     }
-    for (int i=0;i<BARCODE_BUFFER_MAX_LENGTH;i++) m_barcodeBuffer[i]=nullptr;
+    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; i++)
+        m_barcodeBuffer[i] = nullptr;
     m_minimumBarcodeHeight = 0;
     m_inStandby = false;
     m_hDTK5Lib = nullptr;
@@ -327,7 +336,6 @@ BarcodeReader::~BarcodeReader()
 bool BarcodeReader::LoadDTK5(const PTCHAR dllPath)
 {
     InitLogger();
-
 #ifdef UNICODE
     m_hDTK5Lib = LoadLibraryW(dllPath);
 #else
@@ -338,37 +346,41 @@ bool BarcodeReader::LoadDTK5(const PTCHAR dllPath)
         return false;
     }
 
-    m_pfnCreate5  = reinterpret_cast<PFN_BR5_CREATE>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_Create"));
+    m_pfnCreate5 = reinterpret_cast<PFN_BR5_CREATE>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_Create"));
     m_pfnDestroy5 = reinterpret_cast<PFN_BR5_DESTROY>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_Destroy"));
-
     if (!m_pfnCreate5 || !m_pfnDestroy5) {
         LOG_ERROR(CLASSNAME, _T("LoadDTK5"), _T("Create/Destroy exports missing"));
-        FreeLibrary(m_hDTK5Lib);
-        m_hDTK5Lib = nullptr;
+        UnloadDTK5();
         return false;
     }
 
-    // Core decode symbols
+    // Core decode exports
     pReadFromImageBuffer = reinterpret_cast<PFN_ReadFromImageBuffer>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_ReadFromImageBuffer"));
-    pSetRectX            = reinterpret_cast<PFN_set_RectX>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleX"));
-    pSetRectY            = reinterpret_cast<PFN_set_RectY>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleY"));
-    pSetRectW            = reinterpret_cast<PFN_set_RectW>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleWidth"));
-    pSetRectH            = reinterpret_cast<PFN_set_RectH>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleHeight"));
-    pSetBarcodeTypes     = reinterpret_cast<PFN_set_BarcodeTypes>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_BarcodeTypes"));
-    pSetOrientation      = reinterpret_cast<PFN_set_Orientation>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_Orientation"));
-    pGetResultError      = reinterpret_cast<PFN_get_Error>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_get_ErrorCode"));
-    pGetBarcodesCount    = reinterpret_cast<PFN_get_Count>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_get_BarcodesCount"));
-    pGetBarcode          = reinterpret_cast<PFN_get_Barcode>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_get_Barcode"));
-    pGetBarcodeText      = reinterpret_cast<PFN_get_Text>(GetProcAddress(m_hDTK5Lib, "Barcode_get_Text"));
-    pGetBarcodeType      = reinterpret_cast<PFN_get_Type>(GetProcAddress(m_hDTK5Lib, "Barcode_get_Type"));
-    pDestroyBarcode      = reinterpret_cast<PFN_destroy_Barcode>(GetProcAddress(m_hDTK5Lib, "Barcode_Destroy"));
-    pDestroyResult       = reinterpret_cast<PFN_destroy_Result>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_Destroy"));
+    pSetRectX = reinterpret_cast<PFN_set_RectX>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleX"));
+    pSetRectY = reinterpret_cast<PFN_set_RectY>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleY"));
+    pSetRectW = reinterpret_cast<PFN_set_RectW>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleWidth"));
+    pSetRectH = reinterpret_cast<PFN_set_RectH>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_ScanRectangleHeight"));
+    pSetBarcodeTypes = reinterpret_cast<PFN_set_BarcodeTypes>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_BarcodeTypes"));
+    pSetOrientation = reinterpret_cast<PFN_set_Orientation>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_Orientation"));
+    pGetResultError = reinterpret_cast<PFN_get_Error>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_get_ErrorCode"));
+    pGetBarcodesCount = reinterpret_cast<PFN_get_Count>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_get_BarcodesCount"));
+    pGetBarcode = reinterpret_cast<PFN_get_Barcode>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_get_Barcode"));
+    pGetBarcodeText = reinterpret_cast<PFN_get_Text>(GetProcAddress(m_hDTK5Lib, "Barcode_get_Text"));
+    pGetBarcodeType = reinterpret_cast<PFN_get_Type>(GetProcAddress(m_hDTK5Lib, "Barcode_get_Type"));
+    pDestroyBarcode = reinterpret_cast<PFN_destroy_Barcode>(GetProcAddress(m_hDTK5Lib, "Barcode_Destroy"));
+    pDestroyResult = reinterpret_cast<PFN_destroy_Result>(GetProcAddress(m_hDTK5Lib, "BarReaderResult_Destroy"));
+    pGetLicenseInfo = reinterpret_cast<PFN_GetLicenseInfo>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_GetLicenseInfo"));
 
-    // Offline license symbols
+    // License-related optional exports
+    pSetLicenseKeyGlobal = reinterpret_cast<PFN_SetLicenseKey_Global>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_SetLicenseKey"));
+    if (!pSetLicenseKeyGlobal)
+        pSetLicenseKeyGlobal = reinterpret_cast<PFN_SetLicenseKey_Global>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_SetLicense"));
+
+    pSetLicenseKeyHandle = reinterpret_cast<PFN_SetLicenseKey_Handle>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_LicenseKey"));
+    if (!pSetLicenseKeyHandle)
+        pSetLicenseKeyHandle = reinterpret_cast<PFN_SetLicenseKey_Handle>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_set_License"));
+
     pActivateLicenseOffline = reinterpret_cast<PFN_ActivateLicenseOffline>(GetProcAddress(m_hDTK5Lib, "BarcodeReader_ActivateLicenseOffline"));
-    pGetActivationLink      = reinterpret_cast<PFN_GetActivationLink     >(GetProcAddress(m_hDTK5Lib, "BarcodeReader_GetActivationLink"));
-    pGetSystemID            = reinterpret_cast<PFN_GetSystemID           >(GetProcAddress(m_hDTK5Lib, "BarcodeReader_GetSystemID"));
-    pGetLicenseInfo         = reinterpret_cast<PFN_GetLicenseInfo        >(GetProcAddress(m_hDTK5Lib, "BarcodeReader_GetLicenseInfo"));
 
     if (!pReadFromImageBuffer || !pSetRectX || !pSetRectY || !pSetRectW || !pSetRectH ||
         !pSetBarcodeTypes || !pSetOrientation || !pGetResultError ||
@@ -381,7 +393,14 @@ bool BarcodeReader::LoadDTK5(const PTCHAR dllPath)
     }
 
     LOG_INFO(CLASSNAME, _T("LoadDTK5"), _T("Library loaded"));
-    TryActivateLicense();
+
+    // Perform offline activation BEFORE any reader handle creation (if export + token)
+    TryOfflineActivation();
+
+    // Apply global key (harmless if not required)
+    ApplyLicenseKeyIfPossible(nullptr);
+
+    // Defer ValidateUnlimitedLicense() until after handle creation
     return true;
 }
 
@@ -389,7 +408,6 @@ void BarcodeReader::UnloadDTK5()
 {
     if (m_hBarReader5 && m_pfnDestroy5)
         m_pfnDestroy5(m_hBarReader5);
-
     m_hBarReader5 = nullptr;
     m_pfnCreate5 = nullptr;
     m_pfnDestroy5 = nullptr;
@@ -406,30 +424,30 @@ void BarcodeReader::Initialize(PBARCODEREADERSETTINGS pSettings)
 
     if (!pSettings)
         ExceptionInfo::Throw(CLASSNAME, _T("Initialize"), ERR_BARCODEREADER_SETTINGS_IS_NULL);
-    if (!pSettings->pszReaderBinaryLocation || _tcslen(pSettings->pszReaderBinaryLocation)==0)
+    if (!pSettings->pszReaderBinaryLocation || _tcslen(pSettings->pszReaderBinaryLocation) == 0)
         ExceptionInfo::Throw(CLASSNAME, _T("Initialize"), ERR_BARCODEREADER_READER_LOCATION_IS_MISSING);
 
     CopyString(pSettings->pszReaderBinaryLocation, m_pszReaderLocation);
     m_usBarcodeReadingInterval1 = pSettings->usBarcodeReadingInterval1;
     m_usBarcodeReadingInterval2 = pSettings->usBarcodeReadingInterval2;
-    m_BcOrientation             = pSettings->BcOrientation;
+    m_BcOrientation = pSettings->BcOrientation;
 
     m_enableScanRect[0] = !!pSettings->enableScanRect1;
-    m_scanRectLeft[0]   = pSettings->scanRect1Left;
-    m_scanRectTop[0]    = pSettings->scanRect1Top;
-    m_scanRectRight[0]  = pSettings->scanRect1Right;
+    m_scanRectLeft[0] = pSettings->scanRect1Left;
+    m_scanRectTop[0] = pSettings->scanRect1Top;
+    m_scanRectRight[0] = pSettings->scanRect1Right;
     m_scanRectBottom[0] = pSettings->scanRect1Bottom;
 
     m_enableScanRect[1] = !!pSettings->enableScanRect2;
-    m_scanRectLeft[1]   = pSettings->scanRect2Left;
-    m_scanRectTop[1]    = pSettings->scanRect2Top;
-    m_scanRectRight[1]  = pSettings->scanRect2Right;
+    m_scanRectLeft[1] = pSettings->scanRect2Left;
+    m_scanRectTop[1] = pSettings->scanRect2Top;
+    m_scanRectRight[1] = pSettings->scanRect2Right;
     m_scanRectBottom[1] = pSettings->scanRect2Bottom;
 
     m_enableScanRect[2] = !!pSettings->enableScanRect3;
-    m_scanRectLeft[2]   = pSettings->scanRect3Left;
-    m_scanRectTop[2]    = pSettings->scanRect3Top;
-    m_scanRectRight[2]  = pSettings->scanRect3Right;
+    m_scanRectLeft[2] = pSettings->scanRect3Left;
+    m_scanRectTop[2] = pSettings->scanRect3Top;
+    m_scanRectRight[2] = pSettings->scanRect3Right;
     m_scanRectBottom[2] = pSettings->scanRect3Bottom;
 
     m_barcodeBufferLength = pSettings->barcodeRedundancy;
@@ -447,11 +465,20 @@ void BarcodeReader::Initialize(PBARCODEREADERSETTINGS pSettings)
         ExceptionInfo::Throw(CLASSNAME, _T("Initialize"), ERR_BARCODEREADER_NOT_INITIALIZED);
     }
 
+    // Apply handle-based key if available
+    ApplyLicenseKeyIfPossible(m_hBarReader5);
+
+    // Validate now (after activation + creation)
+    ValidateUnlimitedLicense();
+
+    // Enable 1D types only (adjust if you need 2D)
     unsigned int types = 0;
     if (pSettings->enableCode128)         types |= BT_Code128;
     if (pSettings->enableInterleaved2of5) types |= BT_Inter2of5;
     if (pSettings->enableCode39)          types |= BT_Code39;
+    // Keep DataMatrix conditionally (remove if strictly 1D)
     if (pSettings->enableDataMatrix)      types |= BT_DataMatrix;
+
     pSetBarcodeTypes(m_hBarReader5, (BarcodeTypeEnum)types);
 
     int mask = 0;
@@ -473,32 +500,31 @@ void BarcodeReader::Release()
 void BarcodeReader::GetCurrentSettings(PBARCODEREADERSETTINGS pSettings)
 {
     if (!pSettings) return;
+    pSettings->maxBarcodeCount = 1;
+    pSettings->usBarcodeReadingInterval1 = m_usBarcodeReadingInterval1;
+    pSettings->usBarcodeReadingInterval2 = m_usBarcodeReadingInterval2;
+    pSettings->BcOrientation = m_BcOrientation;
 
-    pSettings->maxBarcodeCount            = 1;
-    pSettings->usBarcodeReadingInterval1  = m_usBarcodeReadingInterval1;
-    pSettings->usBarcodeReadingInterval2  = m_usBarcodeReadingInterval2;
-    pSettings->BcOrientation              = m_BcOrientation;
+    pSettings->enableScanRect1 = m_enableScanRect[0] ? 1 : 0;
+    pSettings->scanRect1Left = m_scanRectLeft[0];
+    pSettings->scanRect1Top = m_scanRectTop[0];
+    pSettings->scanRect1Right = m_scanRectRight[0];
+    pSettings->scanRect1Bottom = m_scanRectBottom[0];
 
-    pSettings->enableScanRect1            = m_enableScanRect[0] ? 1 : 0;
-    pSettings->scanRect1Left              = m_scanRectLeft[0];
-    pSettings->scanRect1Top               = m_scanRectTop[0];
-    pSettings->scanRect1Right             = m_scanRectRight[0];
-    pSettings->scanRect1Bottom            = m_scanRectBottom[0];
+    pSettings->enableScanRect2 = m_enableScanRect[1] ? 1 : 0;
+    pSettings->scanRect2Left = m_scanRectLeft[1];
+    pSettings->scanRect2Top = m_scanRectTop[1];
+    pSettings->scanRect2Right = m_scanRectRight[1];
+    pSettings->scanRect2Bottom = m_scanRectBottom[1];
 
-    pSettings->enableScanRect2            = m_enableScanRect[1] ? 1 : 0;
-    pSettings->scanRect2Left              = m_scanRectLeft[1];
-    pSettings->scanRect2Top               = m_scanRectTop[1];
-    pSettings->scanRect2Right             = m_scanRectRight[1];
-    pSettings->scanRect2Bottom            = m_scanRectBottom[1];
+    pSettings->enableScanRect3 = m_enableScanRect[2] ? 1 : 0;
+    pSettings->scanRect3Left = m_scanRectLeft[2];
+    pSettings->scanRect3Top = m_scanRectTop[2];
+    pSettings->scanRect3Right = m_scanRectRight[2];
+    pSettings->scanRect3Bottom = m_scanRectBottom[2];
 
-    pSettings->enableScanRect3            = m_enableScanRect[2] ? 1 : 0;
-    pSettings->scanRect3Left              = m_scanRectLeft[2];
-    pSettings->scanRect3Top               = m_scanRectTop[2];
-    pSettings->scanRect3Right             = m_scanRectRight[2];
-    pSettings->scanRect3Bottom            = m_scanRectBottom[2];
-
-    pSettings->minimumBarcodeHeight       = m_minimumBarcodeHeight;
-    pSettings->barcodeRedundancy          = m_barcodeBufferLength;
+    pSettings->minimumBarcodeHeight = m_minimumBarcodeHeight;
+    pSettings->barcodeRedundancy = m_barcodeBufferLength;
 
     if (pSettings->pszReaderBinaryLocation && m_pszReaderLocation)
         CopyString(m_pszReaderLocation, pSettings->pszReaderBinaryLocation);
@@ -510,28 +536,28 @@ void BarcodeReader::UpdateSettings(PBARCODEREADERSETTINGS pSettings)
 
     m_usBarcodeReadingInterval1 = pSettings->usBarcodeReadingInterval1;
     m_usBarcodeReadingInterval2 = pSettings->usBarcodeReadingInterval2;
-    m_BcOrientation             = pSettings->BcOrientation;
+    m_BcOrientation = pSettings->BcOrientation;
 
     m_enableScanRect[0] = !!pSettings->enableScanRect1;
-    m_scanRectLeft[0]   = pSettings->scanRect1Left;
-    m_scanRectTop[0]    = pSettings->scanRect1Top;
-    m_scanRectRight[0]  = pSettings->scanRect1Right;
+    m_scanRectLeft[0] = pSettings->scanRect1Left;
+    m_scanRectTop[0] = pSettings->scanRect1Top;
+    m_scanRectRight[0] = pSettings->scanRect1Right;
     m_scanRectBottom[0] = pSettings->scanRect1Bottom;
 
     m_enableScanRect[1] = !!pSettings->enableScanRect2;
-    m_scanRectLeft[1]   = pSettings->scanRect2Left;
-    m_scanRectTop[1]    = pSettings->scanRect2Top;
-    m_scanRectRight[1]  = pSettings->scanRect2Right;
+    m_scanRectLeft[1] = pSettings->scanRect2Left;
+    m_scanRectTop[1] = pSettings->scanRect2Top;
+    m_scanRectRight[1] = pSettings->scanRect2Right;
     m_scanRectBottom[1] = pSettings->scanRect2Bottom;
 
     m_enableScanRect[2] = !!pSettings->enableScanRect3;
-    m_scanRectLeft[2]   = pSettings->scanRect3Left;
-    m_scanRectTop[2]    = pSettings->scanRect3Top;
-    m_scanRectRight[2]  = pSettings->scanRect3Right;
+    m_scanRectLeft[2] = pSettings->scanRect3Left;
+    m_scanRectTop[2] = pSettings->scanRect3Top;
+    m_scanRectRight[2] = pSettings->scanRect3Right;
     m_scanRectBottom[2] = pSettings->scanRect3Bottom;
 
     m_minimumBarcodeHeight = pSettings->minimumBarcodeHeight;
-    m_barcodeBufferLength  = pSettings->barcodeRedundancy;
+    m_barcodeBufferLength = pSettings->barcodeRedundancy;
     if (m_barcodeBufferLength > BARCODE_BUFFER_MAX_LENGTH)
         m_barcodeBufferLength = BARCODE_BUFFER_MAX_LENGTH;
 
@@ -545,13 +571,12 @@ void BarcodeReader::UpdateSettings(PBARCODEREADERSETTINGS pSettings)
     }
 }
 
-// ExtractBitmap unchanged
+// Extract bitmap helper
 static bool ExtractBitmap(HBITMAP hBitmap, std::vector<BYTE>& buf, int& w, int& h, int& stride, PixelFormatEnum& fmt)
 {
     BITMAP bm{};
     if (!GetObject(hBitmap, sizeof(bm), &bm)) return false;
-    w = bm.bmWidth;
-    h = bm.bmHeight;
+    w = bm.bmWidth; h = bm.bmHeight;
 
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -587,7 +612,7 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
     }
 
     std::vector<BYTE> pixels;
-    int width=0, height=0, stride=0;
+    int width = 0, height = 0, stride = 0;
     PixelFormatEnum pixFmt = PIXFMT_NONE;
     if (!ExtractBitmap(hBitmap, pixels, width, height, stride, pixFmt)) {
         LOG_WARNING(CLASSNAME, _T("Read"), _T("ExtractBitmap failed"));
@@ -603,12 +628,13 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
     int found = 0;
     int usedRect = -1;
 
-    for (int i=0; i<3; ++i) {
+    for (int i = 0; i < 3; ++i) {
         if (!m_enableScanRect[i]) continue;
+
         int left = m_scanRectLeft[i];
-        int top  = m_scanRectTop[i];
-        int w =  m_scanRectRight[i] - left;
-        int h =  m_scanRectBottom[i] - top;
+        int top = m_scanRectTop[i];
+        int w = m_scanRectRight[i] - left;
+        int h = m_scanRectBottom[i] - top;
         if (w <= 0 || h <= 0) {
             TCHAR msg[128];
             _stprintf(msg, _T("Rect[%d] invalid dims (%d x %d)"), i, w, h);
@@ -627,14 +653,7 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
         pSetRectW(m_hBarReader5, w);
         pSetRectH(m_hBarReader5, h);
 
-        res = pReadFromImageBuffer(
-            m_hBarReader5,
-            pixels.data(),
-            width,
-            height,
-            stride,
-            pixFmt);
-
+        res = pReadFromImageBuffer(m_hBarReader5, pixels.data(), width, height, stride, pixFmt);
         if (!res) {
             LOG_WARNING(CLASSNAME, _T("Read"), _T("Null result handle"));
             continue;
@@ -688,8 +707,7 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
         return;
     }
 
-    std::string utf8;
-    utf8.resize(need);
+    std::string utf8; utf8.resize(need);
     pGetBarcodeText(bc, &utf8[0], need);
 
 #ifdef UNICODE
@@ -707,20 +725,19 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
 
     if (m_barcodeBufferLength > 0) {
         int same = 0;
-        for (int i=0; i<m_barcodeBufferLength; ++i) {
+        for (int i = 0; i < m_barcodeBufferLength; ++i)
             if (m_barcodeBuffer[i] && _tcscmp(m_barcodeBuffer[i], candidateForLog) == 0)
                 ++same;
-        }
         TCHAR msg[160];
         _stprintf(msg, _T("Candidate='%s' redundancy %d/%d (rect=%d)"),
-                  candidateForLog, same, m_barcodeBufferLength, usedRect);
+            candidateForLog, same, m_barcodeBufferLength, usedRect);
         LOG_INFO(CLASSNAME, _T("Read"), msg);
     }
 
     if (CheckRedundancyOk()) {
         BarcodeTypeEnum t = pGetBarcodeType(bc);
         bool change = false;
-        if (!m_readBarcode || _tcscmp(m_readBarcode, dup)!=0) {
+        if (!m_readBarcode || _tcscmp(m_readBarcode, dup) != 0) {
             if (t != BT_Inter2of5 || m_readType == BT_Inter2of5) {
                 if (t != BT_Inter2of5 || !m_readBarcode || _tcslen(m_readBarcode) < _tcslen(dup)) {
                     m_readBarcode = dup;
@@ -732,12 +749,14 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
         }
         if (change) {
             TCHAR msg[256];
-            _stprintf(msg, _T("ACCEPTED '%s' (type=%s)"), candidateForLog, TypeToString(static_cast<BarcodeTypeEnum>(m_readType)));
+            _stprintf(msg, _T("ACCEPTED '%s' (type=%s)"), candidateForLog, TypeToString((BarcodeTypeEnum)m_readType));
             LOG_INFO(CLASSNAME, _T("Read"), msg);
-        } else {
+        }
+        else {
             LOG_INFO(CLASSNAME, _T("Read"), _T("Redundancy satisfied but no change"));
         }
     }
+
     pDestroyBarcode(bc);
     pDestroyResult(res);
 }
@@ -745,17 +764,17 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
 PTCHAR BarcodeReader::GetBarcodeType()
 {
     switch (m_readType) {
-        case BT_Code39:        return (PTCHAR)_T("Code39");
-        case BT_Inter2of5:     return (PTCHAR)_T("Interleaved2of5");
-        case BT_UPCA:          return (PTCHAR)_T("UPCA");
-        case BT_UPCE:          return (PTCHAR)_T("UPCE");
-        case BT_EAN8:
-        case BT_EAN13:         return (PTCHAR)_T("EAN");
-        case BT_Codabar:       return (PTCHAR)_T("Codabar");
-        case BT_Code128:       return (PTCHAR)_T("Code128");
-        case BT_Code93:        return (PTCHAR)_T("Code93");
-        case BT_Code11:        return (PTCHAR)_T("Code11");
-        default:               return (PTCHAR)_T("Unknown");
+    case BT_Code39: return (PTCHAR)_T("Code39");
+    case BT_Inter2of5: return (PTCHAR)_T("Interleaved2of5");
+    case BT_UPCA: return (PTCHAR)_T("UPCA");
+    case BT_UPCE: return (PTCHAR)_T("UPCE");
+    case BT_EAN8:
+    case BT_EAN13: return (PTCHAR)_T("EAN");
+    case BT_Codabar: return (PTCHAR)_T("Codabar");
+    case BT_Code128: return (PTCHAR)_T("Code128");
+    case BT_Code93: return (PTCHAR)_T("Code93");
+    case BT_Code11: return (PTCHAR)_T("Code11");
+    default: return (PTCHAR)_T("Unknown");
     }
 }
 
@@ -781,28 +800,21 @@ void BarcodeReader::ThrowNotInitializedException(const PTCHAR m)
         ExceptionInfo::Throw(CLASSNAME, m, ERR_BARCODEREADER_NOT_INITIALIZED);
 }
 
-void BarcodeReader::EnterStandby()
-{
-    m_inStandby = true;
-}
-
-void BarcodeReader::LeaveStandby()
-{
-    m_inStandby = false;
-}
+void BarcodeReader::EnterStandby() { m_inStandby = true; }
+void BarcodeReader::LeaveStandby() { m_inStandby = false; }
 
 bool BarcodeReader::CheckRedundancyOk()
 {
     if (m_barcodeBufferLength == 0) return false;
-    for (USHORT i=0;i<m_barcodeBufferLength;i++)
-        if (!m_barcodeBuffer[i] || _tcscmp(m_barcodeBuffer[0], m_barcodeBuffer[i])!=0)
+    for (USHORT i = 0; i < m_barcodeBufferLength; i++)
+        if (!m_barcodeBuffer[i] || _tcscmp(m_barcodeBuffer[0], m_barcodeBuffer[i]) != 0)
             return false;
     return true;
 }
 
 void BarcodeReader::SaveToBuffer(PTCHAR s)
 {
-    if (m_barcodeBufferLength==0) return;
+    if (m_barcodeBufferLength == 0) return;
     m_barcodeBuffer[m_nextBufferItem] = s;
     m_nextBufferItem = (m_nextBufferItem + 1) % m_barcodeBufferLength;
 }
@@ -810,6 +822,6 @@ void BarcodeReader::SaveToBuffer(PTCHAR s)
 void BarcodeReader::ClearBarcodeBuffer()
 {
     m_nextBufferItem = 0;
-    for (int i=0;i<BARCODE_BUFFER_MAX_LENGTH;i++)
-        m_barcodeBuffer[i]=nullptr;
+    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; i++)
+        m_barcodeBuffer[i] = nullptr;
 }

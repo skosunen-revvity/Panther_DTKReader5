@@ -145,7 +145,7 @@ protected:
     void ThrowNotInitializedException(const PTCHAR pszMethodName);
 
     // Reserved for later migration steps (currently unused)
-    void SetBcOrientation();
+    //void SetBcOrientation();
 
     bool CheckRedundancyOk();
     void SaveToBuffer(PTCHAR bcString);
