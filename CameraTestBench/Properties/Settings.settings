@@ -1,0 +1,18 @@
+﻿<?xml version='1.0' encoding='utf-8'?>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="PKI.Puncher.CameraTestBench.Properties" GeneratedClassName="Settings">
+  <Profiles />
+  <Settings>
+    <Setting Name="Logfile" Type="System.String" Scope="User">
+      <Value Profile="(Default)">.\Test.txt</Value>
+    </Setting>
+    <Setting Name="LanguagePath" Type="System.String" Scope="Application">
+      <Value Profile="(Default)">C:\SpotLight\Data\Languages</Value>
+    </Setting>
+    <Setting Name="LanguageManagerIsSingleton" Type="System.Boolean" Scope="Application">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="ConfigVersionsDir" Type="System.String" Scope="Application">
+      <Value Profile="(Default)">C:\SpotLight\Instr\Master\Imager\</Value>
+    </Setting>
+  </Settings>
+</SettingsFile>

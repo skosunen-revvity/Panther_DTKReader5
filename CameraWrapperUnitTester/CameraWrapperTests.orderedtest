@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<OrderedTest name="camerawrappertests" storage="c:\spotlight\instr\master\imager\camerawrapperunittester\camerawrappertests.orderedtest" id="8d65d392-b8c3-4f67-ab26-78fcf2247fe8" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Css projectStructure="" iteration="" />
+  <Execution timeOut="2147483647" id="eb2d61e5-4974-451a-92fd-3edabbff7014" />
+  <Owners>
+    <Owner name="" />
+  </Owners>
+  <TestLinks>
+    <TestLink id="8800c96b-59ef-e60a-eb76-59d3365306ab" name="CreateCameraTest" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="de66dc56-0ff8-4e36-da02-c2d607eba070" name="InitializeTest" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="5d154fbd-eb8e-0478-3b7f-5bd6584bf3d5" name="StartTest" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="76a78226-6142-18aa-9f72-06be2bee5394" name="PunchPositions_MustBeSame" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="efd42b5b-5259-237d-160e-43bd2b7247dc" name="PunchPositions_MustBeDifferent" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="77b6e673-9e89-2fc0-5031-d4e48145dd9e" name="Settings_MustBeSame" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="3d8c19b6-cedc-8591-e971-bbbafc046d1d" name="StopTest" storage="bin\debug\camerawrapperunittester.dll" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+    <TestLink id="728d0626-1102-3471-fa10-41707f6e5da2" name="ReleaseTest" storage="bin\debug\camerawrapperunittester.dll" enabled="false" type="Microsoft.VisualStudio.TestTools.TestTypes.Unit.UnitTestElement, Microsoft.VisualStudio.QualityTools.Tips.UnitTest.ObjectModel,   PublicKeyToken=b03f5f7f11d50a3a" />
+  </TestLinks>
+</OrderedTest>
