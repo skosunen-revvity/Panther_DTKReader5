@@ -491,12 +491,6 @@ void BarcodeReader::Initialize(PBARCODEREADERSETTINGS pSettings)
     LOG_INFO(CLASSNAME, _T("Initialize"), _T("Initialized"));
 }
 
-void BarcodeReader::Release()
-{
-    ReleaseString(m_pszReaderLocation);
-    UnloadDTK5();
-}
-
 void BarcodeReader::GetCurrentSettings(PBARCODEREADERSETTINGS pSettings)
 {
     if (!pSettings) return;
@@ -778,50 +772,53 @@ PTCHAR BarcodeReader::GetBarcodeType()
     }
 }
 
-void BarcodeReader::ClearBarcodes()
-{
-    m_readBarcode = nullptr;
-    ClearBarcodeBuffer();
-}
+// Add these helpers to BarcodeReader class (protected section in .h, implementation here):
 
-BYTE BarcodeReader::IsReadRequired(DWORD now, int searching)
+void BarcodeReader::FreeString(PTCHAR& s)
 {
-    if (m_inStandby) return FALSE;
-    if (now > m_dwLastReadTime) {
-        USHORT interval = searching ? m_usBarcodeReadingInterval2 : m_usBarcodeReadingInterval1;
-        return (now - m_dwLastReadTime) > interval ? TRUE : FALSE;
+    if (s) {
+        free(s);
+        s = nullptr;
     }
-    return TRUE;
 }
 
-void BarcodeReader::ThrowNotInitializedException(const PTCHAR m)
+void BarcodeReader::FreeAllBarcodeStrings()
 {
-    if (!m_hBarReader5)
-        ExceptionInfo::Throw(CLASSNAME, m, ERR_BARCODEREADER_NOT_INITIALIZED);
-}
-
-void BarcodeReader::EnterStandby() { m_inStandby = true; }
-void BarcodeReader::LeaveStandby() { m_inStandby = false; }
-
-bool BarcodeReader::CheckRedundancyOk()
-{
-    if (m_barcodeBufferLength == 0) return false;
-    for (USHORT i = 0; i < m_barcodeBufferLength; i++)
-        if (!m_barcodeBuffer[i] || _tcscmp(m_barcodeBuffer[0], m_barcodeBuffer[i]) != 0)
-            return false;
-    return true;
+    FreeString(m_readBarcode);
+    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; ++i) {
+        FreeString(m_barcodeBuffer[i]);
+    }
+    m_nextBufferItem = 0;
 }
 
 void BarcodeReader::SaveToBuffer(PTCHAR s)
 {
-    if (m_barcodeBufferLength == 0) return;
+    if (m_barcodeBufferLength == 0) {
+        FreeString(s);
+        return;
+    }
+    FreeString(m_barcodeBuffer[m_nextBufferItem]);
     m_barcodeBuffer[m_nextBufferItem] = s;
     m_nextBufferItem = (m_nextBufferItem + 1) % m_barcodeBufferLength;
 }
 
 void BarcodeReader::ClearBarcodeBuffer()
 {
+    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; i++) {
+        FreeString(m_barcodeBuffer[i]);
+    }
     m_nextBufferItem = 0;
-    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; i++)
-        m_barcodeBuffer[i] = nullptr;
+}
+
+void BarcodeReader::ClearBarcodes()
+{
+    FreeString(m_readBarcode);
+    ClearBarcodeBuffer();
+}
+
+void BarcodeReader::Release()
+{
+    ReleaseString(m_pszReaderLocation);
+    FreeAllBarcodeStrings();
+    UnloadDTK5();
 }
