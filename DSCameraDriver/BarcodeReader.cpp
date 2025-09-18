@@ -822,3 +822,49 @@ void BarcodeReader::Release()
     FreeAllBarcodeStrings();
     UnloadDTK5();
 }
+
+BYTE BarcodeReader::IsReadRequired(DWORD dwCurrentTime, int searchingPunches)
+{
+    if (!m_hBarReader5)
+        return FALSE;
+
+    USHORT interval = searchingPunches ? m_usBarcodeReadingInterval2 : m_usBarcodeReadingInterval1;
+    return (dwCurrentTime - m_dwLastReadTime) >= interval;
+}
+
+bool BarcodeReader::CheckRedundancyOk()
+{
+    if (m_barcodeBufferLength == 0)
+        return true;
+
+    // Count occurrences of the latest barcode in the buffer
+    int count = 0;
+    PTCHAR latest = m_barcodeBuffer[(m_nextBufferItem + m_barcodeBufferLength - 1) % m_barcodeBufferLength];
+    
+    if (!latest)
+        return false;
+
+    for (int i = 0; i < m_barcodeBufferLength; i++) {
+        if (m_barcodeBuffer[i] && _tcscmp(m_barcodeBuffer[i], latest) == 0)
+            count++;
+    }
+
+    // Need majority of buffer slots to contain the same barcode
+    return count > (m_barcodeBufferLength / 2);
+}
+
+void BarcodeReader::EnterStandby()
+{
+    if (!m_inStandby) {
+        m_inStandby = true;
+        ClearBarcodes();
+    }
+}
+
+void BarcodeReader::LeaveStandby()
+{
+    if (m_inStandby) {
+        m_inStandby = false;
+        ClearBarcodes();
+    }
+}
