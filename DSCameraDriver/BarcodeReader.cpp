@@ -616,12 +616,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
     m_BarcodesChanged = FALSE;
     m_dwLastReadTime = dwCurrentTime;
 
-    {
-        TCHAR msg[96];
-        _stprintf(msg, _T("Read start (time=%lu)"), (unsigned long)dwCurrentTime);
-        LOG_INFO(CLASSNAME, _T("Read"), msg);
-    }
-
     std::vector<BYTE> pixels;
     int width = 0, height = 0, stride = 0;
     PixelFormatEnum pixFmt = PIXFMT_NONE;
@@ -651,12 +645,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
             _stprintf(msg, _T("Rect[%d] invalid dims (%d x %d)"), i, w, h);
             LOG_WARNING(CLASSNAME, _T("Read"), msg);
             continue;
-        }
-
-        {
-            TCHAR msg[128];
-            _stprintf(msg, _T("Rect[%d] scan (%d,%d %dx%d)"), i, left, top, w, h);
-            LOG_INFO(CLASSNAME, _T("Read"), msg);
         }
 
         pSetRectX(m_hBarReader5, left);
@@ -699,7 +687,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
     pSetRectH(m_hBarReader5, 0);
 
     if (found <= 0 || !res) {
-        LOG_INFO(CLASSNAME, _T("Read"), _T("No barcodes found"));
         return;
     }
 
@@ -712,7 +699,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
 
     int need = pGetBarcodeText(bc, nullptr, 0);
     if (need <= 0) {
-        LOG_INFO(CLASSNAME, _T("Read"), _T("Empty barcode text"));
         pDestroyBarcode(bc);
         pDestroyResult(res);
         return;
@@ -734,17 +720,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
 
     SaveToBuffer(dup);
 
-    if (m_barcodeBufferLength > 0) {
-        int same = 0;
-        for (int i = 0; i < m_barcodeBufferLength; ++i)
-            if (m_barcodeBuffer[i] && _tcscmp(m_barcodeBuffer[i], candidateForLog) == 0)
-                ++same;
-        TCHAR msg[160];
-        _stprintf(msg, _T("Candidate='%s' redundancy %d/%d (rect=%d)"),
-            candidateForLog, same, m_barcodeBufferLength, usedRect);
-        LOG_INFO(CLASSNAME, _T("Read"), msg);
-    }
-
     if (CheckRedundancyOk()) {
         BarcodeTypeEnum t = pGetBarcodeType(bc);
         bool change = false;
@@ -762,9 +737,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
             TCHAR msg[256];
             _stprintf(msg, _T("ACCEPTED '%s' (type=%s)"), candidateForLog, TypeToString((BarcodeTypeEnum)m_readType));
             LOG_INFO(CLASSNAME, _T("Read"), msg);
-        }
-        else {
-            LOG_INFO(CLASSNAME, _T("Read"), _T("Redundancy satisfied but no change"));
         }
     }
 
