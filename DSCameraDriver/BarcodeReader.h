@@ -153,4 +153,7 @@ protected:
 
     bool LoadDTK5(const PTCHAR dllPath);
     void UnloadDTK5();
+
+    void FreeString(PTCHAR& s);
+    void FreeAllBarcodeStrings();
 };

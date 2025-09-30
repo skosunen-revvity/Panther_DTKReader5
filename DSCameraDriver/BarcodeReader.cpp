@@ -491,12 +491,6 @@ void BarcodeReader::Initialize(PBARCODEREADERSETTINGS pSettings)
     LOG_INFO(CLASSNAME, _T("Initialize"), _T("Initialized"));
 }
 
-void BarcodeReader::Release()
-{
-    ReleaseString(m_pszReaderLocation);
-    UnloadDTK5();
-}
-
 void BarcodeReader::GetCurrentSettings(PBARCODEREADERSETTINGS pSettings)
 {
     if (!pSettings) return;
@@ -534,10 +528,14 @@ void BarcodeReader::UpdateSettings(PBARCODEREADERSETTINGS pSettings)
 {
     if (!pSettings) return;
 
-    m_usBarcodeReadingInterval1 = pSettings->usBarcodeReadingInterval1;
+    // Update timing intervals
+        m_usBarcodeReadingInterval1 = pSettings->usBarcodeReadingInterval1;
     m_usBarcodeReadingInterval2 = pSettings->usBarcodeReadingInterval2;
+    
+    // Update orientation settings
     m_BcOrientation = pSettings->BcOrientation;
 
+    // Update scan rectangle settings
     m_enableScanRect[0] = !!pSettings->enableScanRect1;
     m_scanRectLeft[0] = pSettings->scanRect1Left;
     m_scanRectTop[0] = pSettings->scanRect1Top;
@@ -556,18 +554,31 @@ void BarcodeReader::UpdateSettings(PBARCODEREADERSETTINGS pSettings)
     m_scanRectRight[2] = pSettings->scanRect3Right;
     m_scanRectBottom[2] = pSettings->scanRect3Bottom;
 
+    // Update other parameters
     m_minimumBarcodeHeight = pSettings->minimumBarcodeHeight;
     m_barcodeBufferLength = pSettings->barcodeRedundancy;
     if (m_barcodeBufferLength > BARCODE_BUFFER_MAX_LENGTH)
         m_barcodeBufferLength = BARCODE_BUFFER_MAX_LENGTH;
 
+    // Only update engine settings if we have a valid reader handle
     if (m_hBarReader5) {
+        // Re-apply barcode types (matching Initialize behavior)
+        unsigned int types = 0;
+        if (pSettings->enableCode128)         types |= BT_Code128;
+        if (pSettings->enableInterleaved2of5) types |= BT_Inter2of5;
+        if (pSettings->enableCode39)          types |= BT_Code39;
+        if (pSettings->enableDataMatrix)      types |= BT_DataMatrix;
+        pSetBarcodeTypes(m_hBarReader5, (BarcodeTypeEnum)types);
+
+        // Re-apply orientation mask
         int mask = 0;
         if (m_BcOrientation & BCR_RD_LEFT_TO_RIGHT)  mask |= BO_LeftToRight;
         if (m_BcOrientation & BCR_RD_RIGHT_TO_LEFT)  mask |= BO_RightToLeft;
         if (m_BcOrientation & BCR_RD_TOP_TO_BOTTOM)  mask |= BO_TopToBottom;
         if (m_BcOrientation & BCR_RD_BOTTOM_TO_TOP)  mask |= BO_BottomToTop;
         pSetOrientation(m_hBarReader5, (BarcodeOrientationEnum)mask);
+
+        LOG_INFO(CLASSNAME, _T("UpdateSettings"), _T("Engine settings reapplied"));
     }
 }
 
@@ -605,12 +616,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
     m_BarcodesChanged = FALSE;
     m_dwLastReadTime = dwCurrentTime;
 
-    {
-        TCHAR msg[96];
-        _stprintf(msg, _T("Read start (time=%lu)"), (unsigned long)dwCurrentTime);
-        LOG_INFO(CLASSNAME, _T("Read"), msg);
-    }
-
     std::vector<BYTE> pixels;
     int width = 0, height = 0, stride = 0;
     PixelFormatEnum pixFmt = PIXFMT_NONE;
@@ -640,12 +645,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
             _stprintf(msg, _T("Rect[%d] invalid dims (%d x %d)"), i, w, h);
             LOG_WARNING(CLASSNAME, _T("Read"), msg);
             continue;
-        }
-
-        {
-            TCHAR msg[128];
-            _stprintf(msg, _T("Rect[%d] scan (%d,%d %dx%d)"), i, left, top, w, h);
-            LOG_INFO(CLASSNAME, _T("Read"), msg);
         }
 
         pSetRectX(m_hBarReader5, left);
@@ -688,7 +687,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
     pSetRectH(m_hBarReader5, 0);
 
     if (found <= 0 || !res) {
-        LOG_INFO(CLASSNAME, _T("Read"), _T("No barcodes found"));
         return;
     }
 
@@ -701,7 +699,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
 
     int need = pGetBarcodeText(bc, nullptr, 0);
     if (need <= 0) {
-        LOG_INFO(CLASSNAME, _T("Read"), _T("Empty barcode text"));
         pDestroyBarcode(bc);
         pDestroyResult(res);
         return;
@@ -723,17 +720,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
 
     SaveToBuffer(dup);
 
-    if (m_barcodeBufferLength > 0) {
-        int same = 0;
-        for (int i = 0; i < m_barcodeBufferLength; ++i)
-            if (m_barcodeBuffer[i] && _tcscmp(m_barcodeBuffer[i], candidateForLog) == 0)
-                ++same;
-        TCHAR msg[160];
-        _stprintf(msg, _T("Candidate='%s' redundancy %d/%d (rect=%d)"),
-            candidateForLog, same, m_barcodeBufferLength, usedRect);
-        LOG_INFO(CLASSNAME, _T("Read"), msg);
-    }
-
     if (CheckRedundancyOk()) {
         BarcodeTypeEnum t = pGetBarcodeType(bc);
         bool change = false;
@@ -751,9 +737,6 @@ void BarcodeReader::Read(HBITMAP hBitmap, DWORD dwCurrentTime)
             TCHAR msg[256];
             _stprintf(msg, _T("ACCEPTED '%s' (type=%s)"), candidateForLog, TypeToString((BarcodeTypeEnum)m_readType));
             LOG_INFO(CLASSNAME, _T("Read"), msg);
-        }
-        else {
-            LOG_INFO(CLASSNAME, _T("Read"), _T("Redundancy satisfied but no change"));
         }
     }
 
@@ -778,50 +761,99 @@ PTCHAR BarcodeReader::GetBarcodeType()
     }
 }
 
-void BarcodeReader::ClearBarcodes()
-{
-    m_readBarcode = nullptr;
-    ClearBarcodeBuffer();
-}
+// Add these helpers to BarcodeReader class (protected section in .h, implementation here):
 
-BYTE BarcodeReader::IsReadRequired(DWORD now, int searching)
+void BarcodeReader::FreeString(PTCHAR& s)
 {
-    if (m_inStandby) return FALSE;
-    if (now > m_dwLastReadTime) {
-        USHORT interval = searching ? m_usBarcodeReadingInterval2 : m_usBarcodeReadingInterval1;
-        return (now - m_dwLastReadTime) > interval ? TRUE : FALSE;
+    if (s) {
+        free(s);
+        s = nullptr;
     }
-    return TRUE;
 }
 
-void BarcodeReader::ThrowNotInitializedException(const PTCHAR m)
+void BarcodeReader::FreeAllBarcodeStrings()
 {
-    if (!m_hBarReader5)
-        ExceptionInfo::Throw(CLASSNAME, m, ERR_BARCODEREADER_NOT_INITIALIZED);
-}
-
-void BarcodeReader::EnterStandby() { m_inStandby = true; }
-void BarcodeReader::LeaveStandby() { m_inStandby = false; }
-
-bool BarcodeReader::CheckRedundancyOk()
-{
-    if (m_barcodeBufferLength == 0) return false;
-    for (USHORT i = 0; i < m_barcodeBufferLength; i++)
-        if (!m_barcodeBuffer[i] || _tcscmp(m_barcodeBuffer[0], m_barcodeBuffer[i]) != 0)
-            return false;
-    return true;
+    FreeString(m_readBarcode);
+    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; ++i) {
+        FreeString(m_barcodeBuffer[i]);
+    }
+    m_nextBufferItem = 0;
 }
 
 void BarcodeReader::SaveToBuffer(PTCHAR s)
 {
-    if (m_barcodeBufferLength == 0) return;
+    if (m_barcodeBufferLength == 0) {
+        FreeString(s);
+        return;
+    }
+    FreeString(m_barcodeBuffer[m_nextBufferItem]);
     m_barcodeBuffer[m_nextBufferItem] = s;
     m_nextBufferItem = (m_nextBufferItem + 1) % m_barcodeBufferLength;
 }
 
 void BarcodeReader::ClearBarcodeBuffer()
 {
+    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; i++) {
+        FreeString(m_barcodeBuffer[i]);
+    }
     m_nextBufferItem = 0;
-    for (int i = 0; i < BARCODE_BUFFER_MAX_LENGTH; i++)
-        m_barcodeBuffer[i] = nullptr;
+}
+
+void BarcodeReader::ClearBarcodes()
+{
+    FreeString(m_readBarcode);
+    ClearBarcodeBuffer();
+}
+
+void BarcodeReader::Release()
+{
+    ReleaseString(m_pszReaderLocation);
+    FreeAllBarcodeStrings();
+    UnloadDTK5();
+}
+
+BYTE BarcodeReader::IsReadRequired(DWORD dwCurrentTime, int searchingPunches)
+{
+    if (!m_hBarReader5)
+        return FALSE;
+
+    USHORT interval = searchingPunches ? m_usBarcodeReadingInterval2 : m_usBarcodeReadingInterval1;
+    return (dwCurrentTime - m_dwLastReadTime) >= interval;
+}
+
+bool BarcodeReader::CheckRedundancyOk()
+{
+    if (m_barcodeBufferLength == 0)
+        return true;
+
+    // Count occurrences of the latest barcode in the buffer
+    int count = 0;
+    PTCHAR latest = m_barcodeBuffer[(m_nextBufferItem + m_barcodeBufferLength - 1) % m_barcodeBufferLength];
+    
+    if (!latest)
+        return false;
+
+    for (int i = 0; i < m_barcodeBufferLength; i++) {
+        if (m_barcodeBuffer[i] && _tcscmp(m_barcodeBuffer[i], latest) == 0)
+            count++;
+    }
+
+    // Need majority of buffer slots to contain the same barcode
+    return count > (m_barcodeBufferLength / 2);
+}
+
+void BarcodeReader::EnterStandby()
+{
+    if (!m_inStandby) {
+        m_inStandby = true;
+        ClearBarcodes();
+    }
+}
+
+void BarcodeReader::LeaveStandby()
+{
+    if (m_inStandby) {
+        m_inStandby = false;
+        ClearBarcodes();
+    }
 }
